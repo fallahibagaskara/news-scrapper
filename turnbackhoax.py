@@ -4,54 +4,68 @@ import pandas as pd
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import random
-import socket
-from urllib3.exceptions import MaxRetryError, NameResolutionError
+from urllib3.util.retry import Retry
+from requests.adapters import HTTPAdapter
+from tqdm import tqdm
+import logging
 
-# Config
-MAX_PAGES = 5  # ~10,000 articles (20 articles per page)
-MAX_WORKERS = 10  # Threads for parallel processing
-REQUEST_TIMEOUT = 30
-DELAY_RANGE = (1, 3)  # Random delay between requests in seconds
-USER_AGENTS = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-]
+# Konfigurasi
+MAX_PAGES = 2  # 500 halaman x ~20 artikel = 10.000 data
+MAX_WORKERS = 5  # Lebih kecil untuk mengurangi timeout
+DELAY_RANGE = (2, 5)  # Delay antara request (detik)
+REQUEST_TIMEOUT = (10, 30)  # (connect timeout, read timeout)
+MAX_RETRIES = 3  # Jumlah percobaan ulang saat gagal
 
-month_translation = {
-    'January': 'Januari',
-    'February': 'Februari',
-    'March': 'Maret',
-    'April': 'April',
-    'May': 'Mei',
-    'June': 'Juni',
-    'July': 'Juli',
-    'August': 'Agustus',
-    'September': 'September',
-    'October': 'Oktober',
-    'November': 'November',
-    'December': 'Desember'
+# Setup logging
+logging.basicConfig(
+    filename='scraper_errors.log',
+    level=logging.ERROR,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+
+# Terjemahan bulan
+MONTH_TRANSLATION = {
+    'January': 'Januari', 'February': 'Februari', 'March': 'Maret',
+    'April': 'April', 'May': 'Mei', 'June': 'Juni',
+    'July': 'Juli', 'August': 'Agustus', 'September': 'September',
+    'October': 'Oktober', 'November': 'November', 'December': 'Desember'
 }
 
 def translate_month(timestamp):
-    if isinstance(timestamp, str):  # Pastikan ini string
-        for eng, indo in month_translation.items():
+    if isinstance(timestamp, str):
+        for eng, indo in MONTH_TRANSLATION.items():
             timestamp = timestamp.replace(eng, indo)
     return timestamp
 
 def get_random_delay():
     return random.uniform(*DELAY_RANGE)
 
-def get_session():
+def create_session():
+    """Membuat session dengan retry mechanism"""
     session = requests.Session()
+    
+    # Retry strategy
+    retry_strategy = Retry(
+        total=MAX_RETRIES,
+        backoff_factor=1,
+        status_forcelist=[408, 429, 500, 502, 503, 504],
+        allowed_methods=["GET"]
+    )
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    
+    # Header
     session.headers.update({
-        'User-Agent': random.choice(USER_AGENTS),
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
         'Accept-Language': 'en-US,en;q=0.9',
         'Accept-Encoding': 'gzip, deflate, br',
-        'Connection': 'keep-alive'
     })
+    
     return session
 
-def get_article_data(url, session):
+def scrape_article(url, session):
+    """Scrape konten artikel individual"""
     try:
         time.sleep(get_random_delay())
         response = session.get(url, timeout=REQUEST_TIMEOUT)
@@ -59,15 +73,23 @@ def get_article_data(url, session):
         
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # Extract full text
+        # Ekstrak teks lengkap
         entry_content = soup.find('div', class_='entry-content')
         full_text = "N/A"
         if entry_content:
+            # Hapus elemen yang tidak diinginkan
             for element in entry_content(['script', 'style', 'figure', 'img', 'nav', 'footer', 'aside', 'form', 'iframe']):
                 element.decompose()
-            full_text = '\n'.join([p.get_text(strip=True) for p in entry_content.find_all(['p', 'h2', 'h3', 'h4']) if p.get_text(strip=True)])
+            
+            # Gabungkan teks dari paragraf dan heading
+            paragraphs = []
+            for p in entry_content.find_all(['p', 'h2', 'h3', 'h4']):
+                text = p.get_text(strip=True)
+                if text:
+                    paragraphs.append(text)
+            full_text = '\n'.join(paragraphs)
         
-        # Extract tags
+        # Ekstrak tags
         tags = []
         meta_categories = soup.find('span', class_='entry-meta-categories')
         if meta_categories:
@@ -80,17 +102,20 @@ def get_article_data(url, session):
         }
         
     except Exception as e:
+        error_msg = f"Error processing {url}: {str(e)}"
+        logging.error(error_msg)
         return {
             'full_text': "N/A",
             'tags': "N/A",
-            'error': str(e)
+            'error': error_msg
         }
 
 def scrape_page(page_num, session):
-    base_url = f"https://turnbackhoax.id/page/{page_num}/"
+    """Scrape list artikel dalam satu halaman"""
     try:
         time.sleep(get_random_delay())
-        response = session.get(base_url, timeout=REQUEST_TIMEOUT)
+        url = f"https://turnbackhoax.id/page/{page_num}/"
+        response = session.get(url, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
         
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -120,80 +145,84 @@ def scrape_page(page_num, session):
                 page_data.append({
                     'Title': title,
                     'Timestamp': timestamp,
-                    'FullText': None,
-                    'Tags': None,
                     'Author': author,
-                    'Url': url
+                    'Url': url,
+                    'FullText': None,  # Akan diisi nanti
+                    'Tags': None       # Akan diisi nanti
                 })
                 
             except Exception as e:
-                print(f"Error processing article preview on page {page_num}: {e}")
+                error_msg = f"Error processing article on page {page_num}: {str(e)}"
+                logging.error(error_msg)
                 continue
                 
         return page_data, article_urls
         
     except Exception as e:
-        print(f"Error scraping page {page_num}: {e}")
+        error_msg = f"Error scraping page {page_num}: {str(e)}"
+        logging.error(error_msg)
         return [], []
 
-def scrape_turnbackhoax():
+def main():
+    print(f"🚀 Memulai scraping {MAX_PAGES} halaman (~{MAX_PAGES*20} artikel)...")
+    
     all_data = []
-    session = get_session()
+    session = create_session()
     
-    # Tahap 1: Ambil semua URL artikel
+    # Tahap 1: Scrape semua URL artikel
+    print("\n🔍 Mengumpulkan URL artikel...")
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        future_to_page = {executor.submit(scrape_page, page_num, session): page_num 
-                         for page_num in range(1, MAX_PAGES + 1)}
+        futures = {executor.submit(scrape_page, page_num, session): page_num 
+                  for page_num in range(1, MAX_PAGES + 1)}
         
-        for future in as_completed(future_to_page):
-            page_num = future_to_page[future]
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Halaman"):
+            page_num = futures[future]
             try:
-                page_data, article_urls = future.result()
+                page_data, _ = future.result()
                 all_data.extend(page_data)
-                
-                print(f"✅ Halaman {page_num} selesai. Total artikel: {len(all_data)}")
             except Exception as e:
-                 print(f"❌ Gagal di halaman {page_num}: {e}")
+                logging.error(f"Critical error on page {page_num}: {str(e)}")
     
-     # Tahap 2: Scrape konten lengkap
-    print("\n🔍 Mulai scraping konten artikel...")
+    print(f"✅ Total URL terkumpul: {len(all_data)}")
+    
+    # Tahap 2: Scrape konten lengkap
+    print("\n📖 Mengambil konten artikel...")
     url_to_index = {article['Url']: idx for idx, article in enumerate(all_data)}
     
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        future_to_url = {executor.submit(get_article_data, article['Url'], session): article['Url'] 
-                        for article in all_data}
+        futures = {executor.submit(scrape_article, article['Url'], session): article['Url'] 
+                 for article in all_data}
         
-        for future in as_completed(future_to_url):
-            url = future_to_url[future]
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Artikel"):
+            url = futures[future]
             try:
                 result = future.result()
                 idx = url_to_index[url]
-                
                 all_data[idx]['FullText'] = result['full_text']
                 all_data[idx]['Tags'] = result['tags']
-                
-                if result['error']:
-                    print(f"Error processing article {url}: {result['error']}")
-                
-                # Progress tracker
-                processed = sum(1 for article in all_data if article['FullText'] is not None)
-                if processed % 100 == 0:
-                    print(f"📌 Progress: {processed}/{len(all_data)} artikel")
             except Exception as e:
-                print(f"⚠️ Gagal proses artikel {url}: {e}")
+                logging.error(f"Error processing result for {url}: {str(e)}")
     
-    return pd.DataFrame(all_data)
+    # Simpan hasil
+    print("\n💾 Menyimpan hasil...")
+    df = pd.DataFrame(all_data)
+    
+    # Simpan per chunk
+    chunk_size = 2000
+    for i in range(0, len(df), chunk_size):
+        chunk = df.iloc[i:i + chunk_size]
+        output_file = f"turnbackhoax_data_part_{i//chunk_size + 1}.xlsx"
+        chunk.to_excel(output_file, index=False)
+        print(f"Disimpan: {output_file} ({len(chunk)} data)")
+    
+    # Simpan URL yang error
+    error_urls = [article['Url'] for article in all_data if article['FullText'] == "N/A"]
+    if error_urls:
+        with open('error_urls.txt', 'w') as f:
+            f.write('\n'.join(error_urls))
+        print(f"\n⚠️ {len(error_urls)} artikel gagal. URL tersimpan di error_urls.txt")
+    
+    print("\n🎉 Selesai! Semua data telah disimpan.")
 
-# Run scraping
-print(f"🛠️ Memulai scraping {MAX_PAGES} halaman (~{MAX_PAGES*20} artikel)...")
-df = scrape_turnbackhoax()
-
-# Save to Excel in chunks to prevent memory issues
-chunk_size = 2000
-for i in range(0, len(df), chunk_size):
-    chunk = df.iloc[i:i + chunk_size]
-    output_file = f"turnbackhoax_data_part_{i//chunk_size + 1}.xlsx"
-    chunk.to_excel(output_file, index=False)
-    print(f"{len(chunk)} data tersimpan di {output_file}")
-
-print("🎉 Selesai! ")
+if __name__ == "__main__":
+    main()
