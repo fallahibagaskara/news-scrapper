@@ -145,10 +145,10 @@ def scrape_page(page_num, session):
                 page_data.append({
                     'Title': title,
                     'Timestamp': timestamp,
+                    'FullText': None,
+                    'Tags': None,
                     'Author': author,
-                    'Url': url,
-                    'FullText': None,  # Akan diisi nanti
-                    'Tags': None       # Akan diisi nanti
+                    'Url': url
                 })
                 
             except Exception as e:
