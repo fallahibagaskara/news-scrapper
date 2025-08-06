@@ -10,7 +10,7 @@ from tqdm import tqdm
 import logging
 
 # Konfigurasi
-MAX_PAGES = 500  # 500 halaman x ~20 artikel = 10.000 data
+MAX_PAGES = 1  # 500 halaman x ~20 artikel = 10.000 data
 MAX_WORKERS = 5  # Lebih kecil untuk mengurangi timeout
 DELAY_RANGE = (2, 5)  # Delay antara request (detik)
 REQUEST_TIMEOUT = (10, 30)  # (connect timeout, read timeout)
