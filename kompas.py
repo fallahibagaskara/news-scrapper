@@ -330,9 +330,16 @@ def main():
         chunk = all_data[i:i + chunk_size]
         df = pd.DataFrame(chunk)
         df = df[df['FullText'] != "N/A"]
-        output_file = f"kompas_cekfakta_data_{i//chunk_size + 1}.xlsx"
-        df.to_excel(output_file, index=False)
-        print(f"Disimpan: {output_file} ({len(df)} data)")
+        
+        # Simpan ke XLSX
+        xlsx_output = f"kompas_cekfakta_data_{i//chunk_size + 1}.xlsx"
+        df.to_excel(xlsx_output, index=False)
+        print(f"Disimpan (XLSX): {xlsx_output} ({len(df)} data)")
+        
+        # Simpan ke CSV
+        csv_output = f"kompas_cekfakta_data_{i//chunk_size + 1}.csv"
+        df.to_csv(csv_output, index=False, encoding='utf-8-sig')  # utf-8-sig untuk handle karakter khusus
+        print(f"Disimpan (CSV): {csv_output} ({len(df)} data)")
     
     error_urls = [article['Url'] for article in all_data if article['FullText'] == "N/A"]
     if error_urls:

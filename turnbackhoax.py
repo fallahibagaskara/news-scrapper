@@ -211,9 +211,16 @@ def main():
     chunk_size = 2000
     for i in range(0, len(df), chunk_size):
         chunk = df.iloc[i:i + chunk_size]
-        output_file = f"turnbackhoax_data_part_{i//chunk_size + 1}.xlsx"
-        chunk.to_excel(output_file, index=False)
-        print(f"Disimpan: {output_file} ({len(chunk)} data)")
+
+        # Simpan ke XLSX
+        xlsx_output = f"turnbackhoax_data_part_{i//chunk_size + 1}.xlsx"
+        chunk.to_excel(xlsx_output, index=False)
+        print(f"Disimpan (XLSX): {xlsx_output} ({len(chunk)} data)")
+        
+        # Simpan ke CSV
+        csv_output = f"turnbackhoax_data_part_{i//chunk_size + 1}.csv"
+        chunk.to_csv(csv_output, index=False, encoding='utf-8-sig')
+        print(f"Disimpan (CSV): {csv_output} ({len(chunk)} data)")
     
     # Simpan URL yang error
     error_urls = [article['Url'] for article in all_data if article['FullText'] == "N/A"]
