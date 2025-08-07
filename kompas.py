@@ -11,12 +11,12 @@ import logging
 import re
 from datetime import datetime
 
-# Konfigurasi
-MAX_PAGES = 1  # Mulai dengan 1 halaman dulu untuk testing
-MAX_WORKERS = 2  # Kurangi worker untuk menghindari blokir
-DELAY_RANGE = (3, 7)  # Tambah delay
-REQUEST_TIMEOUT = (15, 30)
-MAX_RETRIES = 5
+# Konfigurasi Optimized
+MAX_PAGES = 223
+MAX_WORKERS = 10
+DELAY_RANGE = (0.5, 1.5) 
+REQUEST_TIMEOUT = (10, 20)
+MAX_RETRIES = 3
 BASE_URL = "https://www.kompas.com/cekfakta/data-dan-fakta"
 
 # Setup logging
@@ -35,11 +35,11 @@ def create_session():
     
     retry_strategy = Retry(
         total=MAX_RETRIES,
-        backoff_factor=1,
+        backoff_factor=0.5,
         status_forcelist=[408, 429, 500, 502, 503, 504],
         allowed_methods=["GET"]
     )
-    adapter = HTTPAdapter(max_retries=retry_strategy)
+    adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=50, pool_maxsize=50)
     session.mount("https://", adapter)
     session.mount("http://", adapter)
     
@@ -50,6 +50,7 @@ def create_session():
     })
     
     return session
+
 
 def format_timestamp(date_str):
     """Format tanggal ke '21 Februari 2023, 15:30 WIB'"""
@@ -262,7 +263,7 @@ def scrape_page(page_num, session):
 
 def main():
     print(f"🚀 Memulai scraping {MAX_PAGES} halaman dari Kompas Cek Fakta...")
-    logging.info("Memulai scraping Kompas Cek Fakta")
+    logging.info(f"Memulai scraping {MAX_PAGES} halaman Kompas Cek Fakta")
     
     all_data = []
     session = create_session()
@@ -323,20 +324,15 @@ def main():
             except Exception as e:
                 logging.error(f"Error processing result for {url}: {str(e)}")
     
-    # Simpan hasil
-    print("\n💾 Menyimpan hasil...")
-    df = pd.DataFrame(all_data)
-    
-    # Filter out empty articles
-    df = df[df['FullText'] != "N/A"]
-    
-    if len(df) == 0:
-        print("❌ Tidak ada artikel dengan konten yang valid. Periksa log untuk detail.")
-        return
-    
-    output_file = "kompas_cekfakta_data.xlsx"
-    df.to_excel(output_file, index=False)
-    print(f"Disimpan: {output_file} ({len(df)} data)")
+    # Simpan hasil sementara setiap 1000 data
+    chunk_size = 1000
+    for i in range(0, len(all_data), chunk_size):
+        chunk = all_data[i:i + chunk_size]
+        df = pd.DataFrame(chunk)
+        df = df[df['FullText'] != "N/A"]
+        output_file = f"kompas_cekfakta_data_{i//chunk_size + 1}.xlsx"
+        df.to_excel(output_file, index=False)
+        print(f"Disimpan: {output_file} ({len(df)} data)")
     
     error_urls = [article['Url'] for article in all_data if article['FullText'] == "N/A"]
     if error_urls:
@@ -344,7 +340,7 @@ def main():
             f.write('\n'.join(error_urls))
         print(f"\n⚠️ {len(error_urls)} artikel gagal. URL tersimpan di error_urls_kompas.txt")
     
-    print("\n🎉 Selesai! Data berita valid telah disimpan.")
+    print("\n🎉 Selesai! Semua data berita telah disimpan.")
 
 if __name__ == "__main__":
     main()
