@@ -18,7 +18,7 @@ MAX_RETRIES = 3  # Jumlah percobaan ulang saat gagal
 
 # Setup logging
 logging.basicConfig(
-    filename='scraper_errors.log',
+    filename='turnbackhoax_scraper_errors.log',
     level=logging.ERROR,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )

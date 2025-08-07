@@ -53,7 +53,7 @@ def create_session():
 
 
 def format_timestamp(date_str):
-    """Format tanggal ke '21 Februari 2023, 15:30 WIB'"""
+    """Format tanggal ke 'd m Y, H:M WIB'"""
     try:
         # Contoh input: "05/08/2025, 13:08 WIB"
         date_obj = datetime.strptime(date_str, '%d/%m/%Y, %H:%M WIB')
