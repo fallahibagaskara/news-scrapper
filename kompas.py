@@ -8,6 +8,8 @@ from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
 from tqdm import tqdm
 import logging
+import re
+from datetime import datetime
 
 # Konfigurasi
 MAX_PAGES = 1  # Mulai dengan 1 halaman dulu untuk testing
@@ -49,6 +51,20 @@ def create_session():
     
     return session
 
+def format_timestamp(date_str):
+    """Format tanggal ke '21 Februari 2023, 15:30 WIB'"""
+    try:
+        # Contoh input: "05/08/2025, 13:08 WIB"
+        date_obj = datetime.strptime(date_str, '%d/%m/%Y, %H:%M WIB')
+        month_names = [
+            'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
+            'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'
+        ]
+        formatted_date = f"{date_obj.day} {month_names[date_obj.month - 1]} {date_obj.year}, {date_obj.hour}:{date_obj.minute:02d} WIB"
+        return formatted_date
+    except:
+        return date_str  # Return original if parsing fails
+ 
 def scrape_article(url, session):
     """Scrape konten artikel individual"""
     try:
@@ -61,7 +77,37 @@ def scrape_article(url, session):
 
         soup = BeautifulSoup(response.text, 'html.parser')
 
-        # Cek apakah ada tombol "Show All" → buka halaman versi lengkap
+        # Coba ekstrak dari script pertama (jika ada)
+        script_content = soup.find('script', string=lambda t: t and 'keywordBrandSafety' in t)
+        if script_content:
+            full_text = script_content.string.split('keywordBrandSafety = "')[1].split('"')[0]
+            full_text = full_text.replace('&quot;', '"').replace('&amp;', '&').replace('&nbsp;', ' ')
+            
+            # Ekstrak metadata tetap dari HTML
+            date_tag = soup.find('div', class_='read__time')
+            date = date_tag.get_text(strip=True) if date_tag else "N/A"
+            
+            authors = []
+            credit_title = soup.find('div', class_='credit-title-name')
+            if credit_title:
+                author_divs = credit_title.find_all('div', class_='credit-title-nameEditor')
+                authors = [div.get_text(strip=True).replace(',', '').strip() for div in author_divs]
+            author = ', '.join(authors) if authors else "N/A"
+
+            tags = []
+            tag_container = soup.find('ul', class_='tag__article__wrap')
+            if tag_container:
+                tags = [a.get_text(strip=True) for a in tag_container.find_all('a', class_='tag__article__link')]
+
+            return {
+                'full_text': full_text,
+                'date': date,
+                'author': author,
+                'tags': tags,
+                'error': None
+            }
+
+        # Fallback ke metode biasa jika tidak ada script
         show_all_link = soup.find('a', class_='paging__link--show', href=True)
         if show_all_link and 'page=all' in show_all_link['href']:
             show_all_url = show_all_link['href']
@@ -70,35 +116,54 @@ def scrape_article(url, session):
             time.sleep(get_random_delay())
             response = session.get(show_all_url, timeout=REQUEST_TIMEOUT)
             response.raise_for_status()
-            soup = BeautifulSoup(response.text, 'html.parser')  # Replace soup dengan yang baru
+            soup = BeautifulSoup(response.text, 'html.parser')
 
-        # Ekstrak teks lengkap dari halaman final
         content_div = soup.find('div', class_='read__content')
-        full_text = "N/A"
+        full_text = []
+        
         if content_div:
+            # Hapus elemen yang tidak diinginkan
             for element in content_div(['script', 'style', 'figure', 'img', 'nav', 'footer',
-                                        'aside', 'form', 'iframe']):
+                                     'aside', 'form', 'iframe', 'div.ads-on-body', 'span.ads-on-body']):
                 element.decompose()
-
-            paragraphs = [p.get_text(strip=True) for p in content_div.find_all('p')]
-            full_text = '\n'.join([p for p in paragraphs if p])
-
+            
+            # Proses konten secara berurutan
+            for element in content_div.find_all(recursive=False):
+                if element.name == 'p':
+                    text = element.get_text(strip=True)
+                    if text and not re.match(r'^ADVERTISEMENT$', text, re.IGNORECASE):
+                        full_text.append(text)
+                elif element.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
+                    text = element.get_text(strip=True)
+                    if text:
+                        full_text.append(f"\n{text}\n")
+                elif element.name == 'ul':
+                    items = []
+                    for li in element.find_all('li', recursive=False):
+                        item_text = li.get_text(strip=True)
+                        if item_text:
+                            items.append(f"- {item_text}")
+                    if items:
+                        full_text.append("\n" + "\n".join(items) + "\n")
+        
         # Ekstrak metadata
         date_tag = soup.find('div', class_='read__time')
         date = date_tag.get_text(strip=True) if date_tag else "N/A"
+        
+        authors = []
+        credit_title = soup.find('div', class_='credit-title-name')
+        if credit_title:
+            author_divs = credit_title.find_all('div', class_='credit-title-nameEditor')
+            authors = [div.get_text(strip=True).replace(',', '').strip() for div in author_divs]
+        author = ', '.join(authors) if authors else "N/A"
 
-        author_tag = soup.find('div', class_='read__author')
-        author = author_tag.get_text(strip=True) if author_tag else "N/A"
-
-        # 🧩 Tambahkan tag di sini juga (lihat di bawah untuk detail)
-        tag_container = soup.find('div', class_='tag__article__wrap')
         tags = []
+        tag_container = soup.find('ul', class_='tag__article__wrap')
         if tag_container:
-            tag_links = tag_container.find_all('a', class_='tag__article__link')
-            tags = [t.get_text(strip=True) for t in tag_links]
+            tags = [a.get_text(strip=True) for a in tag_container.find_all('a', class_='tag__article__link')]
 
         return {
-            'full_text': full_text,
+            'full_text': '\n'.join(full_text).strip(),
             'date': date,
             'author': author,
             'tags': tags,
@@ -115,7 +180,7 @@ def scrape_article(url, session):
             'tags': [],
             'error': error_msg
         }
-
+     
 def scrape_page(page_num, session):
     """Scrape list artikel dalam satu halaman"""
     try:
@@ -177,8 +242,8 @@ def scrape_page(page_num, session):
                 page_data.append({
                     'Title': title,
                     'Timestamp': formatted_date,
-                    'Tags': None,
                     'FullText': None,
+                    'Tags': None,
                     'Author': None,
                     'Url': article_url,
                 })
